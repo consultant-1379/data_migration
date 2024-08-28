@@ -1,0 +1,523 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+# (c) Ericsson Radio Systems AB 2022 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : eniq_data_migration_user_inputs.bsh
+# Date    : 30/01/2024
+# Revision: /main/02
+# Purpose : To take user inputs for Data Migration.
+#
+# Usage   : eniq_data_migration_user_inputs.bsh 
+#
+# ********************************************************************
+#
+#  Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+BASENAME=/usr/bin/basename
+BASH=/usr/bin/bash
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CHOWN=/usr/bin/chown
+CLEAR=/usr/bin/clear
+CP=/usr/bin/cp
+DATE=/usr/bin/date
+DF=/usr/bin/df
+DIRNAME=/usr/bin/dirname
+ECHO='/usr/bin/echo -e'
+EGREP=/usr/bin/egrep
+EXPR=/usr/bin/expr
+ENV=/usr/bin/env
+GETENT=/usr/bin/getent
+GREP=/usr/bin/grep
+HEAD=/usr/bin/head
+MYHOSTNAME=/usr/bin/hostname
+ID=/usr/bin/id
+KILL=/usr/bin/kill
+LS=/usr/bin/ls
+MKDIR=/usr/bin/mkdir
+MOUNT=/usr/bin/mount
+MV=/usr/bin/mv
+PASTE=/usr/bin/paste
+PS=/usr/bin/ps
+PWD=/usr/bin/pwd
+RM=/usr/bin/rm
+SED=/usr/bin/sed
+SLEEP=/usr/bin/sleep
+SORT=/usr/bin/sort
+SYSTEMCTL=/usr/bin/systemctl
+SU=/usr/bin/su
+SUDO=/usr/bin/sudo
+TAIL=/usr/bin/tail
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+TR=/usr/bin/tr
+UNAME=/usr/bin/uname
+WC=/usr/bin/wc
+XARGS=/usr/bin/xargs
+CUT=/usr/bin/cut
+
+ENIQ_BASE_DIR=/eniq
+ENIQ_SW_DIR=${ENIQ_BASE_DIR}/sw
+ENIQ_BKUPSW_DIR=${ENIQ_BASE_DIR}/bkup_sw
+CLI_CONF_DIR=${ENIQ_BASE_DIR}/sw/conf
+ENIQ_CORE_BIN_DIR=${ENIQ_BASE_DIR}/installation/core_install/bin/
+TEM_DIR_UI=/tmp/Data_Migration_User_Input
+ENIQ_ADMIN_ETC=${ENIQ_BASE_DIR}/admin/etc
+DBEXTRACT_ENV_FILE=${ENIQ_ADMIN_ETC}/dbextract_load.env
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+
+# ********************************************************************
+#
+#   Functions
+#
+# ********************************************************************
+
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted thru an error
+#   signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+_err_time_=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+
+if [ "$1" ]; then
+    _err_msg_="${_err_time_} - $1"
+else
+    _err_msg_="${_err_time_} - ERROR : Script aborted.......\n"
+fi
+
+if [ "$2" ]; then
+    ${2}
+else
+   exit 1
+fi
+
+}
+
+### Function: features_to_be_imported ###
+#
+#   
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+features_to_be_imported()
+{
+#Extract Directory
+_extract_dir_=`$CAT ${DBEXTRACT_ENV_FILE} | $GREP "EXTRACTS=" | $GREP -v "^#" | $AWK -F"=" '{print $2}'`
+
+if [ -s "${RESULTSDIR}/features_import.lst" ]; then
+    $ECHO "\nUser Already selected below features:" | $TEE -a ${LOGFILE}
+    $CAT ${RESULTSDIR}/features_import.lst | $TEE -a ${LOGFILE}
+else 
+IMPORTS=`$ECHO ${_extract_dir_} |$SED "s/:/ /g"`
+_feature_list_file_=$(find ${IMPORTS}/ -type f -name "features.lst" | $HEAD -1) >> /dev/null
+
+# Source server: _feature_list_file_
+# Target server: total_feature_install_list
+
+_feature_count_import=1
+$RM -rf ${TEM_DIR_UI}/feature_list_import.txt 2>/dev/null
+while read _feature_curr_
+do
+    $GREP "${_feature_curr_}" ${ENIQ_ADMIN_DIR}/managed_oss/total_feature_install_list >/dev/null
+    if [ $? -eq 0 ];then
+        $ECHO "[${_feature_count_import}]:${_feature_curr_}" >> ${TEM_DIR_UI}/feature_list_import.txt
+		_feature_count_import=`$EXPR ${_feature_count_import} + 1`
+    fi
+done < ${_feature_list_file_}
+
+_cnt_=`$CAT ${_feature_list_file_} | $WC -l`
+
+$ECHO "\nPlease select the features you wish to import the data using the following format [n,n,n-n,n...n]" 
+$ECHO "E.G. 1,2,3-8,9,10" 
+
+$RM -rf ${TEM_DIR_UI}/feature_selection_import
+if [ -s "${TEM_DIR_UI}/feature_list_import.txt" ]; then
+        while :; do
+                $CAT ${TEM_DIR_UI}/feature_list_import.txt | $AWK -F":" '{print $1" "$2}' | $TEE -a ${LOGFILE}
+                $ECHO "\n"
+                read _opt_
+
+                # If the User hit nothing
+                if [ ! "${_opt_}" ]; then
+                        continue
+                fi
+
+                _numerror_=0
+
+                for _num_ in `$ECHO ${_opt_} | $SED -e 's| ||g' -e 's|,| |g'`; do
+                            $ECHO ${_num_} | $EGREP '-' >> /dev/null 2>&1
+                            if [ $? -eq 0 ]; then
+                                    _start_=`$ECHO ${_num_} | $AWK -F\- '{print $1}'`
+                                    if [ ! "${_start_}" ]; then
+                                            continue
+                                    fi
+
+                                    _end_=`$ECHO ${_num_} | $AWK -F\- '{print $2}'`
+                                    for (( _sel_=${_start_}; _sel_<=${_end_}; _sel_++ )); do
+                                    $ECHO ${_sel_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+                                    if [ $? -eq 0 ]; then
+                                            _numerror_=1
+                                            break
+                                    fi
+
+                                    if [ ${_sel_} -lt 1 -o ${_sel_} -gt ${_cnt_} ]; then     
+                                         _numerror_=1
+                                         break
+                                    fi
+
+                                    $ECHO ${_sel_} >> ${TEM_DIR_UI}/feature_selection_import
+                                    done
+                            else
+                                    $ECHO ${_num_} | $EGREP '[^0-9]' >> /dev/null 2>&1
+                                    if [ $? -eq 0 ]; then
+                                     _numerror_=1
+                                      break
+                                    fi
+
+                                    if [ ${_num_} -lt 1 -o ${_num_} -gt ${_cnt_} ]; then
+                                    _numerror_=1
+                                    break
+                                    fi
+
+                                    $ECHO ${_num_} >> ${TEM_DIR_UI}/feature_selection_import
+                            fi
+                done
+                if [ ${_numerror_} -eq 0 ]; then
+                    break
+                fi
+        done
+else
+        _err_msg_="Could not find list of Features to be installed on the server"
+        abort_script "${_err_msg_}"
+fi
+	
+$RM -rf ${RESULTSDIR}/features_import.lst
+if [ -s "${TEM_DIR_UI}/feature_selection_import" ]; then
+                for _feature_sel_ in `$CAT ${TEM_DIR_UI}/feature_selection_import | $XARGS`
+                do
+                        _feature_=`$GREP -w "\[${_feature_sel_}\]" ${TEM_DIR_UI}/feature_list_import.txt | $AWK -F":" '{print $2}'`
+                        if [ "${_feature_}" ]; then
+                                $ECHO "${_feature_}" >> ${RESULTSDIR}/features_import.lst
+                                chown dcuser:dc5000 ${RESULTSDIR}/features_import.lst
+                        else
+                                _err_msg_="Selected feature(s) does not exist!"
+                                abort_script "${_err_msg_}"
+                        fi
+                done
+else
+            _err_msg_="Could not read the user selected feature(s) file"
+            abort_script "${_err_msg_}"
+fi	
+
+fi
+
+}
+
+
+### Function: date_selection_import ###
+#
+#   
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+date_selection_import()
+{
+#Extract Directory
+_extract_dir_=`$CAT ${DBEXTRACT_ENV_FILE} | $GREP "EXTRACTS=" | $GREP -v "^#" | $AWK -F"=" '{print $2}'`
+
+if [ -s "/${TEM_DIR_UI}/date_selection_completed_flag" ]; then
+    $ECHO "\nUser have already selected Start and End date." | $TEE -a ${LOGFILE}
+    $CAT  /${TEM_DIR_UI}/date_selection_completed_flag | $TEE -a ${LOGFILE}
+else 
+# Get the list of file names in the directory with the specified format
+file_list=$($LS "${_extract_dir_}" | $GREP -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+
+# Sort the file names and extract the min and max
+sorted_file_list=($($ECHO "$file_list" | $TR ' ' '\n' | $SORT))
+if [ ! "${sorted_file_list}" ];then
+    _err_msg_="Error in getting sorted list of Date."
+    abort_script $_err_msg_
+fi
+
+min_date="${sorted_file_list[0]}"
+max_date="${sorted_file_list[-1]}"
+
+default_start_date="${min_date}"
+default_end_date="${max_date}"
+if [ ! "${default_start_date}" ] || [ ! "${default_end_date}" ];then
+    _err_msg_="Error in getting default start date."
+    abort_script $_err_msg_
+fi
+
+$ECHO "\nPlease Enter the Start Date in format YYYY-MM-DD:" | $TEE -a ${LOGFILE}
+$ECHO "\n[Hit enter for default start date (${default_start_date}) or Enter date between range ${min_date} to ${max_date} ]" | $TEE -a ${LOGFILE}
+while :; do
+    read Start_Date_Import
+    if [ ! "${Start_Date_Import}" ]; then
+        Start_Date_Import=${default_start_date}
+    fi
+	
+	if [[ ! $Start_Date_Import =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        $ECHO "Invalid date format. Please use YYYY-MM-DD."
+	    $ECHO "\nPlease Re-Enter the Start Date in format YYYY-MM-DD:" 
+        continue
+    fi
+	
+	# Check if the date is within the given range
+    if [[ "$Start_Date_Import" < "$min_date" || "$Start_Date_Import" > "$max_date" ]]; then
+        $ECHO "Entered date is outside the specified date range."
+	    $ECHO "\nPlease Re-Enter the Start Date in format YYYY-MM-DD:" 
+        continue
+    fi
+
+    if [[ -e "/$_extract_dir_/$Start_Date_Import" ]]; then
+        $ECHO "Date $Start_Date_Import exists in ${_extract_dir_} directory."
+		break
+    else
+		$ECHO "This may take some time, please wait ..."
+		files=("$_extract_dir_"/*)
+
+        # Filter files with date pattern and find the next greater date
+        next_greater_date=""
+        for file in "${files[@]}"; do
+            if [[ $file =~ /([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+                file_date=${BASH_REMATCH[1]}
+                if [[ "$file_date" > "$Start_Date_Import" && ( -z "$next_greater_date" || "$file_date" < "$next_greater_date" ) ]]; then
+                    next_greater_date="$file_date"
+                fi
+            fi
+        done
+
+        if [[ -n "$next_greater_date" ]]; then
+            $ECHO "Date $Start_Date_Import is not present. Next greater date in ${_extract_dir_} is $next_greater_date."
+			$ECHO "Data import will start from $next_greater_date date."
+			Start_Date_Import=${next_greater_date}
+			break
+        else
+            $ECHO "Date $Start_Date_Import is not present, and no greater date found in ${_extract_dir_} directory."
+			$ECHO "\nPlease Re-Enter the Start Date in format YYYY-MM-DD:" 
+	        continue
+        fi
+	fi
+done
+
+Start_date_old_updated=`$CAT /eniq/admin/etc/dbextract_load.env | $GREP -w LASTEXTRACTSTARTTIME= | $AWK -F"=" '{print $2}' | $SED -e "s|'||g"`
+Start_date_to_be_updated="${Start_Date_Import} 00:00:00.00000"
+$SED -i "0,/${Start_date_old_updated}/ s/${Start_date_old_updated}/${Start_date_to_be_updated}/" "/eniq/admin/etc/dbextract_load.env"
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not update /eniq/admin/etc/dbextract_load.env file."
+    abort_script "${_err_msg_}" "${EXEC_SHELL_CMD}"
+fi
+
+$ECHO "\nPlease Enter the End Date in format YYYY-MM-DD:" | $TEE -a ${LOGFILE}
+$ECHO "\n[Hit enter for default end date (${default_end_date}) or Enter date between range ${Start_Date_Import} to ${max_date} ]" | $TEE -a ${LOGFILE}
+while :; do
+    read End_Date_Import
+    if [ ! "${End_Date_Import}" ]; then
+        End_Date_Import=${default_end_date}
+    fi
+	
+	if [[ ! $End_Date_Import =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        $ECHO "Invalid date format. Please use YYYY-MM-DD."
+	    $ECHO "\nPlease Re-Enter the End Date in format YYYY-MM-DD:" 
+        continue
+    fi
+
+    # Check if the date is within the given range
+    if [[ "$End_Date_Import" < "$Start_Date_Import" || "$End_Date_Import" > "$max_date" ]]; then
+        $ECHO "Entered date is outside the specified date range."
+	    $ECHO "\nPlease Re-Enter the End Date in format YYYY-MM-DD:" 
+        continue
+    fi
+
+    if [[ -e "$_extract_dir_/$End_Date_Import" ]]; then
+        $ECHO "Date $End_Date_Import exists in ${_extract_dir_} directory."
+		break
+    else
+		$ECHO "This may take some time, please wait ..."
+		files=("$_extract_dir_"/*)
+
+        # Filter files with date pattern and find the next greater date
+        next_greater_date=""
+        for file in "${files[@]}"; do
+            if [[ $file =~ /([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+                file_date=${BASH_REMATCH[1]}
+                if [[ "$file_date" > "$End_Date_Import" && ( -z "$next_greater_date" || "$file_date" < "$next_greater_date" ) ]]; then
+                    next_greater_date="$file_date"
+                fi
+            fi
+        done
+
+        if [[ -n "$next_greater_date" ]]; then
+            $ECHO "Date $End_Date_Import is not present. Next greater date in ${_extract_dir_} is $next_greater_date."
+			$ECHO "Data will be imported till $next_greater_date date."
+			End_Date_Import=${next_greater_date}
+			break
+        else
+            $ECHO "Date $End_Date_Import is not present, and no greater date found in ${_extract_dir_} directory."
+			$ECHO "\nPlease Re-Enter the End Date in format YYYY-MM-DD:" 
+	        continue
+        fi
+    fi
+done
+
+$TOUCH /${TEM_DIR_UI}/date_selection_completed_flag
+File=/${TEM_DIR_UI}/date_selection_${Start_Date_Import}_${End_Date_Import}
+$ECHO "Start_Date:${Start_Date_Import}" >> ${File}
+$ECHO "End_Date:${End_Date_Import}" >> ${File}
+$CAT "/${TEM_DIR_UI}/date_selection_${Start_Date_Import}_${End_Date_Import}" > /${TEM_DIR_UI}/date_selection_completed_flag
+
+fi
+}
+
+
+
+
+### Function: update_filename_to_be_skip  ###
+#
+#    In export directory append sufix to be skip with directory names not in the range of date user selected.
+#
+# Arguments:
+#       none
+# Return Values:
+#       none
+update_filename_to_be_skip()
+{
+#Extract Directory
+_extract_dir_=`$CAT ${DBEXTRACT_ENV_FILE} | $GREP "EXTRACTS=" | $GREP -v "^#" | $AWK -F"=" '{print $2}'`
+
+$ECHO "\nUpdating filenames which are to be skipked in export directory. This will take some time" | $TEE -a ${LOGFILE}
+
+Start_Date_Import=`$CAT /${TEM_DIR_UI}/date_selection_completed_flag | $GREP Start_Date | $AWK -F":" '{print $2}'`
+End_Date_Import=`$CAT /${TEM_DIR_UI}/date_selection_completed_flag | $GREP End_Date | $AWK -F":" '{print $2}'`
+
+start_range_index=$(printf "%s\n" "${sorted_file_list[@]}" | $GREP -n "$Start_Date_Import" | $CUT -d: -f1)
+end_range_index=$(printf "%s\n" "${sorted_file_list[@]}" | $GREP -n "$End_Date_Import" | $CUT -d: -f1)
+
+# Files below the start date.
+for ((i=0; i<start_range_index-1; i++)); do
+    check_log_dim_files=`ls "$_extract_dir_/${sorted_file_list[$i]}" | $GREP gz `
+        if [ ! "${check_log_dim_files}" ]; then
+            $LS $_extract_dir_/${sorted_file_list[$i]}/* | $EGREP -v "dc_LOG|dc_DIM|_to_be_skip" >> ${RESULTSDIR}/Final_exclude_file_list
+                if [ $? -ne 0 ];then
+                     _err_msg_="Cannot update files which are to be skipped in export directory."
+                     abort_script $_err_msg_
+                fi
+	fi
+done
+
+# Files above the end date.
+for ((i=end_range_index; i<${#sorted_file_list[@]}; i++)); do
+    check_log_dim_files=`ls "$_extract_dir_/${sorted_file_list[$i]}" | $GREP gz`
+	if [ ! "${check_log_dim_files}" ]; then
+             $LS $_extract_dir_/${sorted_file_list[$i]}/* | $EGREP -v "dc_LOG|dc_DIM_to_be_skip" >> ${RESULTSDIR}/Final_exclude_file_list
+                 if [ $? -ne 0 ];then
+                     _err_msg_="Cannot update files which are to be skipped in export directory."
+                     abort_script $_err_msg_
+                fi
+	fi
+done
+
+$ECHO "\nSuccessfully updated files which are to be skipped in export directory." | $TEE -a ${LOGFILE}
+}
+
+
+
+
+### Function: check_feature_in_ExtractTable  ###
+#
+#    
+#
+# Arguments:
+#       $1 - Active_total_tables_${RUNNUMBER}.txt
+# Return Values:
+#       none
+check_feature_in_ExtractTable()
+{
+#Extract Directory
+_extract_dir_=`$CAT ${DBEXTRACT_ENV_FILE} | $GREP "EXTRACTS=" | $GREP -v "^#" | $AWK -F"=" '{print $2}'`
+
+# Get the list of file names in the directory with the specified format
+file_list=$($LS "$_extract_dir_" | $GREP -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+
+# Sort the file names and extract the min and max
+sorted_file_list=($($ECHO "$file_list" | $TR ' ' '\n' | $SORT))
+if [ ! "${sorted_file_list}" ];then
+    _err_msg_="Error in getting sorted list of Date."
+    abort_script $_err_msg_
+fi
+
+$ECHO "Creating Table List  pre feature file for Import"
+if [ -s "${RESULTSDIR}/features_import.lst" ]; then
+            _feature_arg_import_=`$CAT ${RESULTSDIR}/features_import.lst | $TR -s "\n" ","`
+            $BASH  ${ENIQ_CORE_BIN_DIR}/tablelist_perfeature.bsh -a import -f "${_feature_arg_import_}"
+            _check_script_status_import_=`$ECHO ${PIPESTATUS[0]}`    
+            if [ "${_check_script_status_import_}" -ne 0 ]; then
+                    $ECHO "Could not identify list of Tables for features selected for Import...Exiting!"
+                    _err_msg_="Could not identify list of Tables for features selected for Import...Exiting!"
+                    abort_script "${_err_msg_}"
+            fi
+else
+            _err_msg_="Could not locate the selected feature import list file"
+            abort_script "${_err_msg_}"
+fi
+
+Start_Date_Import=`$CAT /${TEM_DIR_UI}/date_selection_completed_flag | $GREP Start_Date | $AWK -F":" '{print $2}'`
+End_Date_Import=`$CAT /${TEM_DIR_UI}/date_selection_completed_flag | $GREP End_Date | $AWK -F":" '{print $2}'`
+
+$ECHO "Check files within the range ($Start_Date_Import to $End_Date_Import) if features are present in Extract tables."
+start_range_index=$(printf "%s\n" "${sorted_file_list[@]}" | $GREP -n "$Start_Date_Import" | $CUT -d: -f1)
+end_range_index=$(printf "%s\n" "${sorted_file_list[@]}" | $GREP -n "$End_Date_Import" | $CUT -d: -f1)
+ 
+$ECHO "Check files within the range ($Start_Date_Import to $End_Date_Import) if features are present in Extract tables."
+for ((i=${start_range_index}-1; i<${end_range_index}; i++)); do
+    $ECHO "${sorted_file_list[$i]}"
+	unset check_feature_for_date_file check_feature_in_ExtractTable_curr
+	check_feature_for_date_file=`$LS ${_extract_dir_}/${sorted_file_list[$i]}/ | $GREP gz | $AWK -F"xyz" '{print $1}'| $CUT -d'_' -f2-`
+	for _feature_ in `$ECHO ${check_feature_for_date_file}`; do
+	   check_feature_in_ExtractTable_curr=`$CAT /eniq/log/sw_log/iq/dbextract_dbload/Load_tablelist.txt | $GREP -w ${_feature_}`
+		if [ ! "${check_feature_in_ExtractTable_curr}" ]; then
+                $LS ${_extract_dir_}/${sorted_file_list[$i]}/dc_${_feature_}* | $EGREP -v "dc_LOG|dc_DIM|_to_be_skip" >> ${RESULTSDIR}/Final_exclude_file_list
+        fi
+	done
+done
+$CAT ${RESULTSDIR}/Final_exclude_file_list | $SORT -u > ${RESULTSDIR}/Final_exclude_file_list_temp
+$CP ${RESULTSDIR}/Final_exclude_file_list_temp ${RESULTSDIR}/Final_exclude_file_list
+for _import_list_ in `$CAT ${RESULTSDIR}/Final_exclude_file_list`; do
+    file_name_without_extension=`$LS ${_import_list_} | $AWK -F".gz" '{print $1}'`
+    $MV ${_import_list_} ${file_name_without_extension}_to_be_skip.gz
+	if [ $? -ne 0 ]; then
+	    $ECHO "Failed to append to_be_skip to ${final_file_list} file"
+	fi
+done
+$ECHO "All features in range $Start_Date_Import to $End_Date_Import are present in Extract tables."
+}

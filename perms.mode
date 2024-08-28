@@ -1,0 +1,52 @@
+####################################
+##          PERMS FILE            ##
+## element user group permissions ##
+####################################
+
+Linux root root 755
+Solaris root root 755
+ENIQStatisticsDataMigrationProcedure.pdf 755
+
+Linux/active_loaddb.bsh root root 755
+Linux/extractdb.bsh root root 755
+Linux/historic_loaddb.bsh root root 755
+Linux/data_migration_status.bsh root root 755
+Linux/eniq_data_migration.bsh root root 755
+Linux/extracttable.bsh root root 755
+Linux/tablelist_perfeature.bsh root root 755
+Linux/precheck/eniq_checks.bsh root root 755
+Linux/precheck/bin/avail_space_dm.bsh root root 755
+Linux/precheck/bin/db_status.bsh root root 755
+Linux/precheck/bin/dbcc_status.bsh root root 755
+Linux/precheck/bin/external_space.bsh root root 755
+Linux/precheck/bin/minimum_space.bsh root root 755
+Linux/precheck/config/return_code.cfg root root 755
+Linux/precheck/config/script_registry_data_migration.cfg root root 755
+Linux/eniq_data_migration_user_inputs.bsh root root 755
+
+Solaris/active_loaddb.bsh root root 755
+Solaris/extractdb.bsh root root 755
+Solaris/historic_loaddb.bsh root root 755
+Solaris/data_migration_status.bsh root root 755
+Solaris/eniq_data_migration.bsh root root 755
+Solaris/extracttable.bsh root root 755
+Solaris/tablelist_perfeature.bsh root root 755
+Solaris/precheck/eniq_checks.bsh root root 755
+Solaris/precheck/bin/avail_space_dm.bsh root root 755
+Solaris/precheck/bin/db_status.bsh root root 755
+Solaris/precheck/bin/dbcc_status.bsh root root 755
+Solaris/precheck/bin/external_space.bsh root root 755
+Solaris/precheck/bin/minimum_space.bsh root root 755
+Solaris/precheck/config/return_code.cfg root root 755
+Solaris/precheck/config/script_registry_data_migration.cfg root root 755
+
+Common/create_drop_idle_users_exceeding_fourHR_fortyGB_Connections.sql root root 644
+Common/topo_duplicate_handler.bsh root root 755
+Common/columnFailedList root root 755
+Common/dbextract_load.env root root 755
+Common/columnNullList.txt root root 755
+Common/copy_data_migration_sw.bsh root root 755
+
+version root root 755
+version/pkginfo root root 444
+

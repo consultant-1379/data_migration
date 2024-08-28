@@ -1,0 +1,6 @@
+PKGINST=eniq_data_migration.tar.gz
+NAME=ENIQ Data Migration tar file
+ARCH=i386
+VERSION=R1A49
+PRODNUM=CXP9038555
+

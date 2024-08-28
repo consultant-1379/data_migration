@@ -1,0 +1,314 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+# (c) Ericsson Radio Systems AB 2023 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : copy_data_migration_sw.bsh
+# Date    : 20/10/2023
+# Revision: /main/1
+# Purpose : Main wrapper script handling the copying of data migration scripts from data migration package.
+#
+# Usage   : copy_data_migration_sw.bsh
+#
+# ********************************************************************
+#
+#   Command Section
+#
+# ********************************************************************
+AWK=/usr/bin/awk
+CAT=/usr/bin/cat
+CHMOD=/usr/bin/chmod
+CP=/usr/bin/cp
+DATE=/usr/bin/date
+ECHO=/usr/bin/echo
+ENV=/usr/bin/env
+EGREP=/usr/bin/egrep
+ECHO='/usr/bin/echo -e'
+GREP=/usr/bin/grep
+ID=/usr/bin/id
+RM=/usr/bin/rm
+SORT=/usr/bin/sort
+SED=/usr/bin/sed
+SUDO=/usr/bin/sudo
+SU=/usr/bin/su
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+WC=/usr/bin/wc
+
+
+
+# ********************************************************************
+#                                                                    *
+#                        Functions                                   *
+#                                                                    *
+# ********************************************************************
+
+### Function: abort_script
+#
+#   This will be called if the script is aborted through an error
+#   encountered during runtime
+#
+# Arguments: $1 - Error message from part of program (Not always used)
+# Return Values: none
+#
+#
+abort_script()
+{
+_err_time_=`$DATE '+%Y-%b-%d_%H.%M.%S'`
+
+if [ "$1" ]; then
+    _err_msg_="${_err_time_} - $1"
+else
+    _err_msg_="${_err_time_} - ERROR : Script aborted.......\n"
+fi
+if [ "${LOGFILE}" ]; then
+    $ECHO "\nERROR: ${_err_msg_}\n" | $TEE -a ${LOGFILE}
+else
+    $ECHO "\nERROR: ${_err_msg_}\n"
+fi
+exit 3
+}
+
+
+### Function: check_user_id ###
+#
+#   Check that the effective id of the user is correct
+#   If not print error msg and exit.
+#
+# Arguments:
+#       $1 : User ID name
+# Return Values:
+#       none
+check_user_id()
+{
+_get_id_=`$ENV |$GREP -w SUDO_USER | $EGREP "^[[:blank:]]*SUDO_USER="|$AWK -F\= '{print $2}'|$SED -e 's|"||g'`
+_check_id_=`$ID | $AWK -F\( '{print $2}' | $AWK -F\) '{print $1}'`
+_check_group_=`$ID $_get_id_ | $AWK -F\( '{print $3}' | $AWK -F\) '{print $1}'`
+
+    if [ "${_get_id_}" == "" ]; then
+        if [ "${_check_id_}" == "root" ]; then
+           # Set 1 for true
+           _user_root=1
+        else
+           _err_msg_="You must be root or admin to execute this script."
+           abort_script "${_err_msg_}" "${EXEC_SHELL_CMD}"
+        fi
+          else
+            if [ "${_check_group_}" == "ENIQ_ADMIN_ROLE" ]; then
+               # Set 0 for false
+               _user_root=0
+            else
+               _err_msg_="You must be root or admin to execute this script." 
+               abort_script "${_err_msg_}" "${EXEC_SHELL_CMD}"
+            fi
+    fi
+}
+
+
+### Function: setup_env ###
+#
+# Setup path environment
+# Imports the common lib files which imports common functions
+#
+# Arguments: none
+# Return Values: none
+#
+#
+setup_env()
+{
+if [ ! "${ENIQ_BASE_DIR}" ]; then
+    ENIQ_BASE_DIR=/eniq
+fi
+
+# Main Directory for the Core Installation SW
+ENIQ_INST_DIR=${ENIQ_BASE_DIR}/installation
+
+# Directory for the Core Installation SW
+ENIQ_CORE_INST_DIR=${ENIQ_INST_DIR}/core_install 
+
+
+# Set temporary upgrade directory
+VAR_TMP_DIR=/var/tmp
+
+# Data Migration temporary Directory
+DATA_MIGRATION=${VAR_TMP_DIR}/data_migration
+
+# Common Data Migration Directory
+COMMON_DIR=${DATA_MIGRATION}/Common
+
+}
+
+
+
+### Function: copy_installation_scripts ###
+#
+#
+#
+copy_installation_scripts()
+{
+
+ostype=`uname -a | cut -d " " -f 1`
+
+if [ "${ostype}" == "Linux" ]; then
+    COPY_DIR="${DATA_MIGRATION}/Linux"
+else 
+    COPY_DIR="${DATA_MIGRATION}/Solaris"
+fi
+
+if [ ! -d "$COPY_DIR" ]; then
+        $ECHO "ERROR: ${COPY_DIR} does not exists."    
+        exit 1
+else
+        $CP -rp ${COPY_DIR}/eniq_data_migration.bsh ${ENIQ_CORE_INST_DIR}/bin/eniq_data_migration.bsh
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy eniq_data_migration!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${COPY_DIR}/data_migration_status.bsh ${ENIQ_CORE_INST_DIR}/bin/data_migration_status.bsh
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy data_migration_status!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${COPY_DIR}/active_loaddb.bsh ${ENIQ_CORE_INST_DIR}/bin/active_loaddb.bsh
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy active_loaddb!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${COPY_DIR}/extractdb.bsh ${ENIQ_CORE_INST_DIR}/bin/extractdb.bsh
+        if [ $? -ne 0 ]; then
+                                _err_msg_="Failed to copy extractdb!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${COPY_DIR}/extracttable.bsh ${ENIQ_CORE_INST_DIR}/bin/extracttable.bsh
+        if [ $? -ne 0 ]; then
+                                _err_msg_="Failed to copy extracttable!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${COPY_DIR}/historic_loaddb.bsh ${ENIQ_CORE_INST_DIR}/bin/historic_loaddb.bsh
+        if [ $? -ne 0 ]; then
+                                _err_msg_="Failed to copy historic_loaddb!"
+                                abort_script "${_err_msg_}"
+        fi
+
+
+        $CP -rp ${COPY_DIR}/tablelist_perfeature.bsh ${ENIQ_CORE_INST_DIR}/bin/tablelist_perfeature.bsh
+        if [ $? -ne 0 ]; then
+                                _err_msg_="Failed to copy tablelist_perfeature!"
+                                abort_script "${_err_msg_}"
+        fi
+
+       
+fi
+
+}
+
+
+### Function: copy_precheck_scripts ###
+#
+#
+#
+copy_precheck_scripts()
+{
+ostype=`uname -a | cut -d " " -f 1`
+if [ "${ostype}" == "Linux" ]; then
+        $CP -rp ${DATA_MIGRATION}/Linux/precheck/bin/* ${ENIQ_CORE_INST_DIR}/eniq_checks/bin/
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy precheck/bin/!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${DATA_MIGRATION}/Linux/precheck/config/* ${ENIQ_CORE_INST_DIR}/eniq_checks/config/
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy precheck/config/!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${DATA_MIGRATION}/Linux/precheck/eniq_checks.bsh ${ENIQ_CORE_INST_DIR}/bin/
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy precheck/eniq_checks!"
+                                abort_script "${_err_msg_}"
+        fi
+fi
+}
+
+
+
+### Function: copy_common_scripts ###
+#
+#
+#
+copy_common_scripts()
+{
+if [ ! -d "${COMMON_DIR}" ];then
+        $ECHO "ERROR: ${COMMON_DIR} does not exists."    
+        exit 1
+else
+
+        $CP -rp ${COMMON_DIR}/dbextract_load.env /eniq/admin/etc/dbextract_load.env
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy dbextract_load!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp /${COMMON_DIR}/columnFailedList /eniq/installation/core_install/etc/columnFailedList
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy columnFailedList!"
+                                abort_script "${_err_msg_}"
+        fi
+
+        $CP -rp ${COMMON_DIR}/columnNullList.txt /eniq/installation/core_install/etc/columnNullList.txt
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy columnNullList.txt!"
+                abort_script "${_err_msg_}"
+        fi
+        
+		$CP -rp ${COPY_DIR}/eniq_data_migration_user_inputs.bsh ${ENIQ_CORE_INST_DIR}/bin/eniq_data_migration_user_inputs.bsh
+        if [ $? -ne 0 ]; then
+                _err_msg_="Failed to copy eniq_data_migration_user_inputs!"
+                abort_script "${_err_msg_}"
+        fi
+
+        echo "All required files are copied"
+
+fi
+}
+
+
+
+
+# ********************************************************************
+#
+#       Main body of program
+#
+# ********************************************************************
+
+# Check that the effective id of the user is root
+check_user_id
+
+# Set up environment variables for script.
+setup_env
+
+# Copy scripts present in core_install directory
+copy_installation_scripts
+
+# Copy Precheck scripts
+copy_precheck_scripts
+
+# Copy Common scripts
+copy_common_scripts
+

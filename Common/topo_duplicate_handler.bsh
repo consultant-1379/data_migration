@@ -1,0 +1,585 @@
+#!/bin/bash
+# ********************************************************************
+# Ericsson Radio Systems AB                                     SCRIPT
+# ********************************************************************
+#
+# (c) Ericsson Radio Systems AB 2021 - All rights reserved.
+#
+# The copyright to the computer program(s) herein is the property
+# of Ericsson Radio Systems AB, Sweden. The programs may be used
+# and/or copied only with the written permission from Ericsson Radio
+# Systems AB or in accordance with the terms and conditions stipulated
+# in the agreement/contract under which the program(s) have been
+# supplied.
+#
+# ********************************************************************
+# Name    : duplicate_handler.bsh
+# Date    : 28/05/2021
+# Revision: /main/02
+# Purpose : Script to detect and remove duplicate data from topology tables.  
+#           
+# Usage   : ./topo_duplicate_handler.bsh
+#
+# ********************************************************************
+#
+# Command Section
+#
+# ********************************************************************
+
+CHMOD=/usr/bin/chmod
+DATE=/usr/bin/date
+ECHO=/usr/bin/echo
+MKDIR=/usr/bin/mkdir
+RM=/usr/bin/rm
+SED=/usr/bin/sed
+TEE=/usr/bin/tee
+TOUCH=/usr/bin/touch
+SU=/bin/su
+CAT=/usr/bin/cat
+AWK=/usr/bin/awk
+TR=/usr/bin/tr
+HEAD=/usr/bin/head
+WC=/usr/bin/wc
+ID=/usr/bin/id
+
+
+# ********************************************************************
+#
+#       Configuration Section
+#
+# ********************************************************************
+
+CONF_DIR=/eniq/sw/conf
+DBA=dba
+DBISQL="$(ls /eniq/sybase_iq/IQ-*/bin64/dbisql)"
+SYS_USER=dcuser
+LOG_TP_DIR=/eniq/log/sw_log/tp_installer/
+TMP_ALIAS="_DUPHTMP"
+USER=`id -un`
+INSTALLER_DIR=/eniq/sw/installer
+TMP=/var/tmp/dup_handler_tmp/
+TEMP=/var/tmp/dup_handler_temp/
+_duplicate_table_list_=()
+_failed_table_list_=()
+ENIQ_INST_DIR=/eniq/installation
+ENIQ_CONF_DIR=${ENIQ_INST_DIR}/config
+
+
+
+# ********************************************************************
+#
+#   Functions
+#
+# ********************************************************************
+### Function: _echo_log_date ###
+#
+#   Print and write the logs 
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+_echo_log_date() {
+$ECHO `$DATE '+%Y-%m-%d %H:%M:%S': ` $* | $TEE -a ${LOG_FILE}
+}
+### Function: _echo_log ###
+#
+#   Print and write the logs 
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+_echo_log () {
+$ECHO "$*" | $TEE -a ${LOG_FILE}
+}
+### Function: usage_msg ###
+#
+#   Print out the usage message
+#
+# Arguments:
+#   none
+# Return Values:
+#   none
+usage_msg() {
+${ECHO} "
+Usage : bash duplicate_handler.bsh [ 
+
+Optional:
+-r <input file path with list of tables that need to be roll backed>
+-d <To delete the existing backup data!>]
+"
+exit 2
+
+}
+
+### Function: abort_script ###
+#
+#   This will is called if the script is aborted through an error
+#   error signal sent by the kernel such as CTRL-C or if a serious
+#   error is encountered during runtime
+#
+# Arguments:
+#       $1 - Error message from part of program (Not always used)
+# Return Values:
+#       none
+abort_script()
+{
+
+if [ "$1" ]; then
+_err_msg_="$1"
+else
+_err_msg_="ERROR : Script aborted.......\n"
+fi
+
+_echo_log_date "$_err_msg_"
+
+if [ "$2" ]; then
+${2}
+else
+  exit 1
+fi
+
+}
+
+### Function: create_dir ###
+#
+#   Delete a directory if exist and create
+#
+# Arguments:
+#       $1 - Log message
+# Return Values:
+#       none
+create_dir(){
+if [ -d $TEMP ]; then
+$RM -rf $TEMP
+if [[ $? -ne 0 ]]; then
+   abort_script "Failed to remove temporary directories(${TEMP}). Exiting ..."
+fi
+fi
+$MKDIR -p $TEMP
+if [[ $? -ne 0 ]]; then
+   abort_script "Failed to create temporary directories(${TEMP}). Exiting ..."
+fi
+$CHMOD 777 ${TEMP}
+if [[ $? -ne 0 ]]; then
+   abort_script "Failed to give permission temporary directories(${TEMP}). Exiting ..."
+fi
+
+if [ -d ${TMP} ] ; then
+$RM -rf ${TMP}
+if [[ $? -ne 0 ]]; then
+   abort_script "Failed to remove temporary directories(${TMP}). Exiting ..."
+fi
+fi
+$MKDIR -p ${TMP}
+if [[ $? -ne 0 ]]; then
+   abort_script "Failed to create temporary directories(${TMP}). Exiting ..."
+fi
+$CHMOD 777 ${TMP} 
+if [[ $? -ne 0 ]]; then
+   abort_script "Failed to give permission temporary directories(${TEMP}). Exiting ..."
+fi
+
+# Create a temporary Directory
+TEM_DIR=/tmp/topo_duplicate_handler.$$.$$
+$RM -rf ${TEM_DIR}
+$MKDIR -p ${TEM_DIR}
+if [ $? -ne 0 ]; then
+    _err_msg_="Could not create directory ${TEM_DIR}"
+    abort_script "${_err_msg_}"
+fi
+$CHMOD 777 $TEM_DIR
+
+}
+
+### Function: find_table ###
+#
+#   This function checks for any Topology Table 
+#
+#
+# Arguments:
+# None
+# Return Values:
+# None
+find_table() {
+_echo_log_date "checking for topology tables"
+
+${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA} "select table_name from systable where  table_type = 'BASE' and table_name like 'DIM_E_%' and table_name not like '%CURRENT%' and table_name not like '%BHTYPE%' and table_name not like '%_V_%'  and table_name not like '%_pm%' and table_name not like '%${TMP_ALIAS}' and table_id in (select distinct table_id from syscolumn where column_name in ('CREATED','MODIFIED'));OUTPUT TO '${TEMP}/table_name.txt' QUOTE ''" > /dev/null 2>&1
+
+if [ ${?} -eq  0 ]; then
+
+if [ -s ${TEMP}/table_name.txt ] ; then
+while IFS= read -r line; do
+name=(${line})
+if [[ ! -z ${name} ]]; then
+${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA} "select list(column_name)  from syscolumn where table_id = (select table_id from systab where creator=103 and table_name = '${name}' ) and column_name not in ('CREATED','MODIFIED') ;OUTPUT TO '$TEMP/${name}.txt' FORMAT TEXT QUOTE ''" > /dev/null 2>&1
+ while IFS= read -r line; do
+	counter=(${line})
+	if [[ ! -z ${counter} ]]; then
+	${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA} "select count(*),${counter} from dc.${name} group by ${counter} having count(*)>1 ;OUTPUT TO '$TEMP/${name}_rows.txt' FORMAT TEXT QUOTE ''" > /dev/null 2>&1
+	else
+	_err_msg_="Unable to fecth Counter details.Exiting"
+	abort_script "$_err_msg_"
+	fi
+
+done < ${TEMP}/${name}.txt
+if [ `cat $TEMP/${name}_rows.txt | $WC -l` -eq  0 ]; then
+_echo_log_date "No Duplicate in ${name}"
+else
+_echo_log_date "Found Duplicate in ${name}"
+_duplicate_table_list_+=(${name})
+fi
+$RM ${TEMP}/${name}.txt
+fi
+done < ${TEMP}/table_name.txt
+# sql query to check duplicate in dim_date table
+${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA} "SELECT COUNT(*) FROM dc.DIM_DATE GROUP BY DATE_ID,YEAR_ID,MONTH_ID,DAY_ID,
+WEEK_ID,WEEKDAY_ID,BUSINESSDAY HAVING COUNT(*) > 1 ;OUTPUT TO '$TEMP/duplicate_rows.txt' FORMAT TEXT QUOTE ''" > /dev/null 2>&1
+
+if [ `cat $TEMP/duplicate_rows.txt | $WC -l` -eq  0 ]; then
+    _echo_log_date "No Duplicate in DIM_DATE"
+else
+    _echo_log_date "Found Duplicate in DIM_DATE"
+    _duplicate_table_list_+=(DIM_DATE)
+fi
+
+$RM ${TEMP}/duplicate_rows.txt
+if [[ $? -eq  0 ]]; then
+   _echo_log_date "Successfully removed the duplicate_rows.txt file "
+else
+   _echo_log_date "Could not delete duplicate_rows.txt file "
+fi
+
+else	
+    _echo_log_date "No Topology Table found"
+fi
+else	
+_err_msg_="ERROR: Failed to fetch information related to Topology tables"
+abort_script "$_err_msg_"
+fi
+
+}
+
+### Function: duplicate_data_deletion ###
+#
+#   This function delete duplicate data from Topology Tables 
+#
+#
+# Arguments:
+# None
+# Return Values:
+# None
+duplicate_data_deletion() {
+for _duplicate_table_ in ${_duplicate_table_list_[@]}; do
+
+  ${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA} "select list(column_name)  from syscolumn where table_id = (select table_id from systab where creator=103 and table_name = '${_duplicate_table_}' ) and column_name not in ('CREATED','MODIFIED') ;OUTPUT TO '${TMP}/${_duplicate_table_}.txt' FORMAT TEXT QUOTE ''"  > /dev/null 2>&1
+
+  while IFS= read -r line; do
+    counter=(${line})
+  done < ${TMP}/${_duplicate_table_}.txt
+  
+  if [[ ${_duplicate_table_} == "DIM_DATE" ]]; then      
+	duplicate_removal_sqlQuery="truncate table ${_duplicate_table_}; insert into ${_duplicate_table_} (${counter}) select distinct ${counter} from ${_duplicate_table_}$TMP_ALIAS group by ${counter} "
+   else
+     duplicate_removal_sqlQuery="truncate table ${_duplicate_table_}; insert into ${_duplicate_table_} (${counter},created,modified) select distinct ${counter}, max(created),max(modified) from ${_duplicate_table_}$TMP_ALIAS group by ${counter} "
+   fi
+
+  tableCount=$(${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA} "select count(*) from systable where table_name = '${_duplicate_table_}${TMP_ALIAS}'"|$TAIL -4|$HEAD -1|tr -d " ")
+  if [ $tableCount -ne 0 ]; then
+    _echo_log_date "Backup of ${_duplicate_table_} is already exists."
+    tableCounts=$(${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "select count(*) from ${_duplicate_table_}$TMP_ALIAS"|$TAIL -4|$HEAD -1|tr -d " ")
+    _echo_log_date "The tablecounts is $tableCounts"
+	if [ $tableCounts -eq 0   ] ; then
+      _echo_log_date "Backup configuration for ${_duplicate_table_} is already available. Deleting the backup as it doesnt have any data!"
+      ${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "DROP TABLE IF EXISTS ${_duplicate_table_}$TMP_ALIAS"  > /dev/null 2>&1
+	else
+      if [[ ${_backup_removal_flag_} =~ ^[Yy]$ ]]; then
+        ${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "DROP TABLE IF EXISTS ${_duplicate_table_}$TMP_ALIAS"  > /dev/null 2>&1
+        if [[ $? -eq 0 ]]; then
+          _echo_log_date "Sucessfully deleted the backup for ${_duplicate_table_}" 
+        else
+          _echo_log_date "Failed to deleted the backup for ${_duplicate_table_}. Skipping ..."
+          continue
+        fi
+	  else
+        _echo_log_date "Retaining the available backup and Skipping duplicate removal for ${_duplicate_table_}..."
+		continue
+	  fi
+	fi
+  fi
+
+  _echo_log_date "Taking latest backup of ${_duplicate_table_}..." 
+  ${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "select * INTO ${_duplicate_table_}$TMP_ALIAS from ${_duplicate_table_}" > /dev/null 2>&1
+  if [[ $? -eq 0 ]]; then
+    _echo_log_date "Successfully took the backup of the ${_duplicate_table_}." 
+  else
+    _echo_log_date "Failed to take backup of ${_duplicate_table_} table. Skipping .." 
+    continue
+  fi
+  _echo_log_date "Removing duplicate from ${_duplicate_table_} table ..." 
+  ${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "${duplicate_removal_sqlQuery}" > /dev/null 2>&1 
+  if [[ $? -eq 0 ]]; then
+	_echo_log_date "Successfully removed all the duplicate data from ${_duplicate_table_}."
+  else
+	_echo_log_date "Failed to identify and remove duplicate from ${_duplicate_table_} table. Skipping.."
+	_failed_table_list_+=(${_duplicate_table_})
+	continue
+  fi
+done
+
+if [[ ${#_failed_table_list_[@]} -ne 0 ]]; then
+  _echo_log_date "Duplicate deletion has been failed for below list of tables:"
+  for _failed_table_ in ${_failed_table_list_[@]}; do
+    _echo_log "-${_failed_table_}"
+  done
+fi
+
+}
+
+### Function: rollback_backup_tables ###
+#
+#   This function rullback backed up Topology Tables 
+#
+#
+# Arguments:
+# None
+# Return Values:
+# None
+rollback_backup_tables() {
+table_name=$1
+tableExist=$(${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "SELECT count(name)  from sysobjects WHERE name = '${table_name}${TMP_ALIAS}' AND type = 'U'"|$TAIL -4|$HEAD -1|tr -d " ")
+if [ $tableExist -ne 0 ]; then
+tempChange=$(${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "select count(*) from ${table_name}${TMP_ALIAS}"|$TAIL -4|$HEAD -1|tr -d " ")
+if [ $tempChange -ne 0 ]; then
+  _echo_log_date "Backup is available with ${tempChange} rows of data. Initiating restore for $table_name ..."
+  columnDiff=`${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA}  "select (a.colnum - b.colnum) as coldiff from (select count(column_name) as colnum from syscolumn where table_id = (select table_id from systab where creator=103 and table_name = '${table_name}')) as a,(select count(column_name) as colnum from syscolumn where table_id = (select table_id from systab where creator=103 and table_name = '${table_name}${TMP_ALIAS}')) as b" |$TAIL -4|$HEAD -1|tr -d " "`
+  if [[ $columnDiff -eq 0 ]]; then
+    tableCountt=$(${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "select count(*) from $table_name"|$TAIL -4|$HEAD -1|tr -d " ")
+    _echo_log_date "${tableCountt} rows of data are available in the $table_name" 
+    ${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "DROP TABLE IF EXISTS $table_name; select * INTO ${table_name} from ${table_name}${TMP_ALIAS}"  > /dev/null 2>&1
+    if [[ $? -eq 0 ]]; then
+	  _echo_log_date "Successfully restored ${table_name}." 
+  	  ${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "DROP TABLE IF EXISTS ${table_name}$TMP_ALIAS"  > /dev/null 2>&1
+      if [[ $? -eq 0 ]]; then
+        _echo_log_date "Sucessfully removed the existing backup for ${table_name}" 
+      else
+        _echo_log_date "Failed to remove the backup for ${table_name}. Skipping ..."
+	  fi
+    else
+	  _echo_log_date "Failed to restore ${table_name} table. "
+    fi
+  else
+    _echo_log_date "Identified column miss match in the ${table_name} with comparing to the backup. Skipping restore.."
+  fi
+else
+  _echo_log_date "No backup data are available for ${table_name}" 
+fi
+else
+  _echo_log_date "${table_name} is invalid table and does not exists."
+fi
+}
+
+### Function: rollback_backup_tables ###
+#
+#   This function rullback backed up Topology Tables 
+#
+#
+# Arguments:
+# None
+# Return Values:
+# None
+backup_deletion() {
+${IQDIR}/bin64/dbisql ${DWH_CONN_STR_USER_DBA} "select table_name from systable where  table_type = 'BASE' and ((table_name like 'DIM_E_%' and table_name not like '%CURRENT%' and table_name not like '%BHTYPE%' and table_name not like '%_V_%'  and table_name not like '%_pm%' and table_name like '%${TMP_ALIAS}') or table_name like 'DIM_DATE${TMP_ALIAS}');OUTPUT TO '${TEMP}/backuplist.txt' QUOTE ''" > /dev/null 2>&1
+
+if [ ${?} -eq  0 ]; then
+
+  if [ -s ${TEMP}/backuplist.txt ] ; then
+    while IFS= read -r line; do
+      name=(${line})
+      if [[ ! -z ${name} ]]; then
+        ${IQDIR}/bin64/dbisql ${CONN_STR_USER_DC} "DROP TABLE IF EXISTS ${name}"  > /dev/null 2>&1 
+        if [[ $? -eq 0 ]]; then
+          _echo_log_date "Sucessfully removed the existing backup for ${name/${TMP_ALIAS}/}" 
+        else
+          _echo_log_date "Failed to remove the backup for ${name/${TMP_ALIAS}/}. Skipping ..."
+	    fi
+      fi
+    done < ${TEMP}/backuplist.txt
+  else
+    _echo_log_date "No backup are available."
+  fi
+fi
+}
+
+# ********************************************************************
+#
+#   Main body of program
+#
+# ********************************************************************
+
+if [[ `$ID -un | tr '[:upper:]' '[:lower:]'` != "dcuser" ]]; then
+echo "ERROR: Please execute the script as dcuser!"
+exit 2
+fi
+
+if [ ! -r "${CONF_DIR}/niq.rc" ] ; then
+  echo "ERROR: Source file is not readable at ${CONF_DIR}/niq.rc"
+  exit 2
+else
+  . ${CONF_DIR}/niq.rc
+fi
+
+if [ -s /eniq/admin/lib/common_functions.lib ]; then
+  . /eniq/admin/lib/common_functions.lib
+else
+  echo "ERROR: Could not find /eniq/admin/lib/common_functions.lib"
+  exit 2
+fi
+
+if [[ `uname | tr '[:upper:]' '[:lower:]'` == "linux" ]]; then
+  if [ -r /eniq/sw/bin/common_variables.lib ]; then
+    . /eniq/sw/bin/common_variables.lib
+  else
+	echo "ERROR: File /eniq/admin/lib/common_variables.lib not found"
+	exit 2
+  fi
+fi
+
+if [ ! -x "$DBISQL" ]; then
+    echo "ERROR: $DBISQL commands not found or not executable."
+	exit 2
+fi
+
+
+if [[ $1 == "-r" ]]; then
+_activate_rollback_="true"
+LOG_FILE=${LOG_TP_DIR}/topo_duplicate_handler_rollback_`$DATE '+%Y%m%d_%H%M%S'`.log
+if [[ ! -z $2 ]] && [[ -f $2 ]]; then
+_rollback_file_list_=${2}
+fi
+elif [[ $1 == "-d" ]]; then
+_activate_backup_remove_="true"
+LOG_FILE=${LOG_TP_DIR}/topo_duplicate_handler_commit_`$DATE '+%Y%m%d_%H%M%S'`.log
+else
+LOG_FILE=${LOG_TP_DIR}/topo_duplicate_handler_`$DATE '+%Y%m%d_%H%M%S'`.log
+fi
+
+create_dir
+
+_echo_log_date "Starting execution of  script"
+
+DBAPASSWORD=`inigetpassword DB -v DBAPassword -f ${CONF_DIR}/niq.ini`
+DWHDB_PORT=`inigetpassword DWH -v PortNumber -f ${CONF_DIR}/niq.ini`
+DWH_SERVER_NAME=`inigetpassword DWH -v ServerName -f ${CONF_DIR}/niq.ini`
+DWHDBPASSWORD=`inigetpassword DWH -v DCPassword -f ${CONF_DIR}/niq.ini`
+
+
+
+
+# based on the encrypted function pick the connection string
+
+declare -f get_encrypt_file > /dev/null
+if [ $? -eq 0 ];then
+
+    # removing old connection strings
+    $RM -rf ${TEM_DIR}/conn_str_encrypt.txt.*
+    DWH_CONN_STR_USER_DBA="-nogui -onerror exit -c \"uid=dba;pwd=${DBAPASSWORD};eng=${DWH_SERVER_NAME};links=tcpip{host=${DWH_SERVER_NAME};port=${DWHDB_PORT};dobroadcast=no;verify=no}\""
+    
+    DWH_CONN_STR_USER_DBA_ENC=${TEM_DIR}/conn_str_encrypt.txt.$$
+    
+    # get the encrypted connection string.
+    get_encrypt_file "${DWH_CONN_STR_USER_DBA}" "${DWH_CONN_STR_USER_DBA_ENC}"
+    
+    #assign encrypted variable to the new variable
+    DWH_CONN_STR_USER_DBA=@$DWH_CONN_STR_USER_DBA_ENC
+    
+
+    # removing the old conection strings for repdb
+    $RM -rf ${TEM_DIR}/con_str_encrypt.*
+    
+    #Initialising the connection string for repdb
+    CONN_STR_USER_DBA_REPDB="-nogui -onerror exit -c \"eng=repdb;links=tcpip{host=localhost;port=2641};uid=dba;pwd=${DBA_PASSWORD}\""
+    CONN_STR_USER_DBA_REPDB_ENC=${TEM_DIR}/con_str_encrypt.$$
+
+    # get the encrypted connection string.
+    get_encrypt_file "${CONN_STR_USER_DBA_REPDB}" "${CONN_STR_USER_DBA_REPDB_ENC}"
+    CONN_STR_USER_DBA_REPDB=@$CONN_STR_USER_DBA_REPDB_ENC
+
+
+	# removing the old conection strings for dc
+    $RM -rf ${TEM_DIR}/dc_con_str_encrypt.*
+    
+    #Initialising the connection string for dc
+    CONN_STR_USER_DC="-nogui -onerror exit -c \"eng=${DWH_SERVER_NAME};links=tcpip{host=${DWH_SERVER_NAME};port=${DWHDB_PORT}};uid=dc;pwd=${DWHDBPASSWORD};\""
+    CONN_STR_USER_DC_ENC=${TEM_DIR}/dc_con_str_encrypt.$$
+
+    # get the encrypted connection string.
+    get_encrypt_file "${CONN_STR_USER_DC}" "${CONN_STR_USER_DC_ENC}"
+    CONN_STR_USER_DC=@$CONN_STR_USER_DC_ENC
+
+else
+
+    DWH_CONN_STR_USER_DBA="-nogui -onerror exit -c \"uid=dba;pwd=${DBAPASSWORD};eng=${DWH_SERVER_NAME};links=tcpip{host=${DWH_SERVER_NAME};port=${DWHDB_PORT};dobroadcast=no;verify=no}\""
+    CONN_STR_USER_DC="-nogui -onerror exit -c \"eng=${DWH_SERVER_NAME};links=tcpip{host=${DWH_SERVER_NAME};port=${DWHDB_PORT}};uid=dc;pwd=${DWHDBPASSWORD};\""
+    
+ 
+    CONN_STR_USER_DBA_REPDB="-nogui -onerror exit -c \"eng=repdb;links=tcpip{host=localhost;port=2641};uid=dba;pwd=${DBA_PASSWORD}\""
+
+fi
+
+if [[ ${_activate_rollback_} == "true" ]]; then
+  if [[ -z ${_rollback_file_list_} ]]; then
+    $ECHO "Please enter table name which need to be roll backed-"
+    read table
+    rollback_backup_tables ${table}
+  else
+    for table in `cat ${_rollback_file_list_}`; do
+      rollback_backup_tables ${table}
+	done
+  fi
+elif [[ ${_activate_backup_remove_} == "true" ]]; then
+  backup_deletion
+else
+$ECHO "Enter Y/y to delete the duplicate data from all tables or enter any other key to generate the list of duplicate to a file."
+read -p "--> " -n 1 -r
+$ECHO ""
+_remove_duplicate_flag_=${REPLY}
+
+$ECHO "Enter Y/y to delete the old backup of topology tables and to continue removing the duplicate data,  or enter any other key to keep the backup and skip the duplicate removal."
+read -p "--> " -n 1 -r
+$ECHO ""
+_backup_removal_flag_=${REPLY}
+
+_echo_log "----------------------------------------------------------------------------"  
+_echo_log "`${DATE} '+%Y-%b-%d_%H:%M:%S'` Starting to search tables with duplicates.."
+_echo_log "----------------------------------------------------------------------------"
+
+find_table
+
+_echo_log "-----------------------------------------------------------------------------"  
+_echo_log "`${DATE} '+%Y-%b-%d_%H:%M:%S'` Completed search for tables with duplicate data!"
+_echo_log "-----------------------------------------------------------------------------"
+
+  if [[ ${#_duplicate_table_list_[@]} -ne 0 ]]; then
+    _echo_log_date "Below ${#_duplicate_table_list_[@]} topology tables that has been identified with duplicate data."
+    for _duplicate_table_ in ${_duplicate_table_list_[@]}; do
+      _echo_log ${_duplicate_table_}
+    done
+    if [[ ${_remove_duplicate_flag_} =~ ^[Yy]$ ]]; then
+      _echo_log_date "Inititating proceedure for removing the duplicate data.."
+      duplicate_data_deletion
+    else 
+      _table_list_filename_=/eniq/home/dcuser/duplicate_table_list_`date +'%s'`.txt
+	  _echo_log_date "Writing the list of topology table names that has duplicate data into ${_table_list_filename_}"
+	  for _duplicate_table_ in ${_duplicate_table_list_[@]}; do
+        ${ECHO} ${_duplicate_table_} >> ${_table_list_filename_}
+      done
+	  _echo_log_date "Sucessfully written table names to ${_table_list_filename_}."
+    fi
+  else
+   _echo_log_date "No duplicate data found in the topology tables."
+  fi
+fi
+
+_echo_log_date "Completed execution of script " 
